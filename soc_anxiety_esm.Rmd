@@ -1,0 +1,291 @@
+---
+title: "soc_anxiety_esm"
+output: html_document
+date: "2024-12-13"
+output:
+  html_document:
+    toc: true
+    toc_depth: '5'
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    toc_depth: 5
+    code_folding: hide
+  word_document:
+    toc: true
+    toc_depth: '5'
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{css}
+
+d-title {
+    visibility: hidden;
+  }
+  
+```
+
+```{r, include = F,  warning=F, message=F}
+
+options("scipen" = 100, "digits" = 4)
+
+```
+
+```{r, include = F,  include=F, warning=F, message=F}
+
+library(tidyverse)
+library(lme4)
+library(corrplot)
+library(lmerTest)
+library(janitor)
+library(lavaan)
+library(semTools)
+library(sjPlot)
+library(lubridate)
+library(patchwork)
+library(ggstats)
+
+```
+
+# import data
+
+```{r, include = F,  include=F}
+big_data <- read.csv("data_processed/big_data.csv")
+```
+
+# working with the data
+
+```{r, include = F}
+#reversing "soc_esm_5_dolgok_vilagos_ertelme_celja" due to initial negative factor loading
+
+big_data$soc_esm_5_dolgok_vilagos_ertelme_celja <- 8 - big_data$soc_esm_5_dolgok_vilagos_ertelme_celja
+
+```
+
+
+## creating model data
+
+```{r, include = F}
+
+model_soc <- 
+  big_data %>% 
+  select(id_esm, day_in_study, sex, age, contains(c("soc_esm", "szorongas", "depr", "mss_pos", "mss_neg", "mss_dis"))) %>% 
+  group_by(id_esm, day_in_study) %>% 
+  mutate(szorongas_mean = mean(szorongas, na.rm = T)) %>% 
+  select(-szorongas) %>% 
+  ungroup() %>% 
+  distinct() 
+
+```
+
+## calculating ICC for soc items
+
+```{r}
+
+icc_loser             <- lmer(soc_esm_3_vesztesnek_erzem_magam ~ 1 + (1 | id_esm), data = model_soc)
+icc_control           <- lmer(soc_esm_4_kontrollalhatatlan_erzelmek ~ 1 + (1 | id_esm), data = model_soc)
+icc_meaning           <- lmer(soc_esm_5_dolgok_vilagos_ertelme_celja ~ 1 + (1 | id_esm), data = model_soc)
+icc_meaningless       <- lmer(soc_esm_6_ertelmetlen_tevekenyseg ~ 1 + (1 | id_esm), data = model_soc)
+icc_unfamiliar        <- lmer(soc_esm_ismeretlen_helyzet ~ 1 + (1 | id_esm), data = model_soc)
+icc_disorder          <- lmer(soc_esm_zurzavaros_erzelmek ~ 1 + (1 | id_esm), data = model_soc)
+
+
+
+tab_model(
+  icc_loser,
+  icc_control,
+  icc_meaning,
+  icc_meaningless,
+  icc_unfamiliar,
+  icc_disorder,
+  
+  show.ngroups = TRUE,  
+  p.val = "satterthwaite", 
+  show.aic = TRUE,
+  show.aicc = TRUE,
+  p.style = "stars",
+  digits = 2, 
+  digits.re = 3, 
+  emph.p = TRUE,  
+  string.ci = "95% CI",
+  dv.labels = 
+    c("icc_loser", 
+      "icc_control", "icc_meaning",
+      "icc_meaningless", "icc_unfamiliar",
+      "icc_disorder"))
+
+
+```
+
+## plotting the distributions of conspiracy items within individuals
+
+```{r, fig.width=8, fig.height=60}
+#7188 rows removed?
+model_soc %>% 
+select(id_esm, contains("soc_esm")) %>%
+pivot_longer(!id_esm, names_to = "soc_item", values_to = "values") %>%
+ggplot(aes(values)) +
+geom_bar() +
+facet_grid(id_esm ~ soc_item)
+```
+
+# multilevel cfa of conspiracy items
+
+```{r, include = F}
+#### hierarchical factors
+
+dat_cfa_soc <-
+  model_soc %>% 
+  select(id_esm, day_in_study, 
+         soc_esm_3_vesztesnek_erzem_magam,
+         soc_esm_4_kontrollalhatatlan_erzelmek,
+         soc_esm_5_dolgok_vilagos_ertelme_celja,
+         soc_esm_6_ertelmetlen_tevekenyseg,
+         soc_esm_ismeretlen_helyzet, soc_esm_zurzavaros_erzelmek) %>%
+  filter_at(vars(soc_esm_3_vesztesnek_erzem_magam:soc_esm_zurzavaros_erzelmek), all_vars(!is.na(.))) 
+  
+
+## covariance tests missing!
+cfa_soc <- '
+
+level: 1
+      soc_within =~  
+      soc_esm_3_vesztesnek_erzem_magam + soc_esm_4_kontrollalhatatlan_erzelmek +
+      soc_esm_5_dolgok_vilagos_ertelme_celja + soc_esm_6_ertelmetlen_tevekenyseg +
+      soc_esm_ismeretlen_helyzet + soc_esm_zurzavaros_erzelmek
+      
+      
+level: 2
+      soc_between =~  
+      soc_esm_3_vesztesnek_erzem_magam + soc_esm_4_kontrollalhatatlan_erzelmek +
+      soc_esm_5_dolgok_vilagos_ertelme_celja + soc_esm_6_ertelmetlen_tevekenyseg +
+      soc_esm_ismeretlen_helyzet + soc_esm_zurzavaros_erzelmek
+      
+'
+
+fit_soc <- cfa(model = cfa_soc, data = dat_cfa_soc, std.lv = TRUE, cluster = "id_esm", estimator = "ML")
+```
+
+```{r, include = F,  warning = T}
+
+fitMeasures(fit_soc, c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr_within", "srmr_between"))
+```
+
+```{r, include = F}
+
+summary(fit_soc, std = T)
+
+```
+
+```{r, include = F}
+
+modificationindices(fit_soc) %>% arrange(-mi) #%>% view()
+
+```
+
+## factor loadings of the conspiracy items within and between individuals
+
+```{r}
+# within/betwwen-person factor loadings
+# "soc_esm_5_dolgok_vilagos_ertelme_celja" reversed
+
+(inspect(fit_soc, what = "std")$within$lambda)
+(inspect(fit_soc, what = "std")$id_esm$lambda)
+
+```
+
+## reliability of soc factor within and between individuals
+
+```{r}
+# reliability
+(semTools::reliability(fit_soc))
+
+```
+
+## adding the factor scores to the model data
+
+```{r, include = F}
+dat_soc_lev_2 <-
+  dat_cfa_soc %>%
+  select(id_esm) %>%
+  distinct() %>%
+  cbind(lavPredict(fit_soc, newdata = dat_cfa_soc[3:8], level = 2L))
+
+dat_soc_lev_1 <-
+  dat_cfa_soc %>%
+  cbind(lavPredict(fit_soc, newdata = dat_cfa_soc[3:8], level = 1L)) %>%
+  select(-contains("ESM_SOC"))
+
+dat_soc <-
+  dat_soc_lev_1 %>%
+  left_join(dat_soc_lev_2, by = "id_esm") %>%
+  mutate(soc_cfa =  soc_within + soc_between)
+
+model_soc <-
+  model_soc %>% 
+  left_join(dat_soc, by = c("id_esm", "day_in_study"))
+
+```
+
+## adding lagged versions of anxiety and conspiracy to the model data
+
+```{r, include = F}
+
+model_soc_model <- 
+  model_soc %>% 
+  #select(id_esm, age, sex, day_in_study, szorongas_mean, soc_cfa, depr, mss_pos, mss_neg, mss_dis) %>%
+  distinct() %>%
+  group_by(id_esm) %>% 
+  mutate(szorongas_mean_lag = lag(szorongas_mean),
+         soc_cfa_lag = lag(soc_cfa),
+         szorongas_mean_lag_centered = scale(szorongas_mean_lag, center = T, scale = F),
+         soc_cfa_lag_centered = scale(soc_cfa_lag, center = T, scale = F))
+
+```
+
+# model 1: predicting soc from lagged anxiety
+
+```{r}
+model_1 <- 
+  lmer(soc_cfa ~ age + sex + day_in_study + 
+         szorongas_mean_lag_centered + soc_cfa_lag + 
+         (szorongas_mean_lag_centered + soc_cfa_lag | id_esm), data = model_soc_model)
+
+summary(model_1)
+```
+
+
+```{r}
+plot_model(model_1, type = "std")
+tab_model(model_1, show.std = T, show.aic = T)
+
+```
+
+# model 2: predicting anxiety from lagged soc
+
+```{r}
+model_2 <- 
+  lmer(szorongas_mean ~ age + sex + day_in_study + 
+         szorongas_mean_lag_centered + soc_cfa_lag + 
+         (szorongas_mean_lag_centered + soc_cfa_lag | id_esm),
+       data = model_soc_model)
+
+
+summary(model_2)
+```
+
+
+```{r}
+plot_model(model_2, type = "std")
+tab_model(model_2, show.std = T, show.aic = T)
+
+```
